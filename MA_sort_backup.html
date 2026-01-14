@@ -1,0 +1,416 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+    <meta charset="utf-8" />
+    <title>SMA/EMA/WMA 暴力破解最佳化系統 - 帶註解版</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.0.0/dist/css/bootstrap.min.css" rel="stylesheet">
+    <script src="https://cdn.plot.ly/plotly-latest.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/PapaParse/5.3.0/papaparse.min.js"></script>
+    <style>
+        /* UI 樣式定義 */
+        body { background: #f4f7f9; }
+        .sidebar { background: #fff; padding: 20px; min-height: 100vh; border-right: 1px solid #ddd; position: sticky; top: 0; }
+        .config-section { background: #f8f9fa; padding: 15px; border-radius: 8px; margin-bottom: 15px; border: 1px solid #eee; }
+        #mainChart, #heatmapChart, #surfaceChart3D { background: white; border-radius: 8px; box-shadow: 0 2px 10px rgba(0,0,0,0.1); margin-bottom: 20px; }
+        #mainChart { height: 500px; }
+        #heatmapChart { height: 500px; }
+        #surfaceChart3D { height: 600px; }
+        .table-container { border: 1px solid #ddd; border-radius: 8px; background: #fff; overflow-y: auto; }
+        .trade-log-height { max-height: 350px; }
+        .ranking-height { max-height: 400px; }
+        .clickable-row { cursor: pointer; transition: background 0.2s; }
+        .clickable-row:hover { background: #f1f3f5 !important; }
+        .active-row { background: #cfe2ff !important; font-weight: bold; }
+        .sticky-header thead { position: sticky; top: 0; background: #212529; color: white; z-index: 10; }
+    </style>
+</head>
+<body>
+<div class="container-fluid">
+    <div class="row">
+        <nav class="col-md-3 sidebar">
+            <h4 class="mb-4 text-primary">最佳化引擎</h4>
+            
+            <div class="config-section">
+                <label class="form-label fw-bold">1. 數據上傳</label>
+                <input type="file" id="csvFile" accept=".csv" class="form-control mb-2" />
+                <select id="stockSelect" class="form-select" disabled></select>
+            </div>
+
+            <div class="config-section">
+                <label class="form-label fw-bold">2. 策略設定</label>
+                <small>均線類型</small>
+                <select id="maType" class="form-select mb-2">
+                    <option value="SMA">SMA (簡單移動平均)</option>
+                    <option value="EMA">EMA (指數移動平均)</option>
+                    <option value="WMA">WMA (加權移動平均)</option>
+                </select>
+                <small>搜尋範圍 (最大天數 1-N)</small>
+                <input type="number" id="maxP" class="form-control" value="100">
+            </div>
+
+            <div class="config-section">
+                <label class="form-label fw-bold">3. 帳戶與規費</label>
+                <div class="mb-2">
+                    <small>初始資金 (USD)</small>
+                    <input type="number" id="initCapitalInput" class="form-control" value="10000">
+                </div>
+                <div>
+                    <small>手續費率 (例如 0.0008 代表 0.08%)</small>
+                    <input type="number" id="commRateInput" class="form-control" value="0.0008" step="0.0001">
+                </div>
+            </div>
+
+            <div class="config-section">
+                <label class="form-label fw-bold">4. 日期篩選</label>
+                <div class="mb-2"><small>開始</small><input type="date" id="startDate" class="form-control"></div>
+                <div class="mb-2"><small>結束</small><input type="date" id="endDate" class="form-control"></div>
+            </div>
+
+            <button id="runBtn" class="btn btn-primary w-100 fw-bold shadow-sm" disabled>開始搜尋最佳參數</button>
+            <div id="loader" class="text-center mt-3 d-none">
+                <div class="spinner-border spinner-border-sm text-primary" role="status"></div>
+                <span class="ms-2 small">正在進行暴力破解計算中...</span>
+            </div>
+        </nav>
+
+        <main class="col-md-9 p-4">
+            <div id="mainChart"></div>
+
+            <div class="row">
+                <div class="col-xl-6">
+                    <h5 class="mb-2 text-primary border-bottom pb-2">2D_熱力圖</h5>
+                    <div id="heatmapChart"></div>
+                </div>
+                <div class="col-xl-6">
+                    <h5 class="mb-2 text-primary border-bottom pb-2">3D_立體圖 </h5>
+                    <div id="surfaceChart3D"></div>
+                </div>
+            </div>
+            
+            <div class="d-flex justify-content-between align-items-center mb-2">
+                <h5 class="mb-0">交易詳細明細</h5>
+                <div id="summaryStats" class="badge bg-dark p-2">等待計算</div>
+            </div>
+            <div class="table-container trade-log-height mb-5 shadow-sm">
+                <table class="table table-sm mb-0 sticky-header" id="tradeTable">
+                    <thead>
+                        <tr><th>序號</th><th>日期</th><th>動作</th><th>價格</th><th>股數</th><th>損益 (USD)</th></tr>
+                    </thead>
+                    <tbody></tbody>
+                </table>
+            </div>
+
+            <h5 class="mb-2 text-primary border-bottom pb-2">Top 20 最佳參數排行</h5>
+            <div class="table-container ranking-height shadow-sm">
+                <table class="table table-hover table-sm mb-0 sticky-header" id="rankingTable">
+                    <thead class="table-primary text-dark">
+                        <tr>
+                            <th>排名</th><th>參數(S/L)</th><th>最終資產</th><th>總報酬</th>
+                            <th>交易次數</th><th>總獲利</th><th>總虧損</th><th>勝率</th>
+                        </tr>
+                    </thead>
+                    <tbody></tbody>
+                </table>
+            </div>
+        </main>
+    </div>
+</div>
+
+<script>
+// --- 全域資料緩存 ---
+let fullDates = [];      // 所有交易日期
+let fullPrices = [];     // 所有的股價數據
+let rawCSVData = [];     // 解析後的 CSV 原始物件陣列
+let headers = [];        // CSV 標頭名稱
+let allMA = {};          // 預計算的均線矩陣 {天數: [均線陣列]}
+
+// --- 事件：處理檔案上傳 ---
+document.getElementById('csvFile').addEventListener('change', function(e) {
+    Papa.parse(e.target.files[0], {
+        header: true, dynamicTyping: true, skipEmptyLines: true,
+        complete: function(results) {
+            rawCSVData = results.data;
+            headers = Object.keys(rawCSVData[0]);
+            fullDates = rawCSVData.map(r => r[headers[0]]); // 預設第一欄為日期
+            
+            // 將股票名稱填入下拉選單
+            const select = document.getElementById('stockSelect');
+            select.innerHTML = headers.slice(1).map(h => `<option value="${h}">${h}</option>`).join('');
+            select.disabled = false;
+            document.getElementById('runBtn').disabled = false;
+            
+            // 自動偵測並填入日期搜尋範圍
+            document.getElementById('startDate').value = new Date(fullDates[0]).toISOString().split('T')[0];
+            document.getElementById('endDate').value = new Date(fullDates[fullDates.length-1]).toISOString().split('T')[0];
+        }
+    });
+});
+
+// --- 均線演算法實作 ---
+
+// SMA: 算術平均線 (滑動視窗法)
+function calcSMA(prices, period) {
+    let sma = new Array(prices.length).fill(null);
+    let sum = 0;
+    for (let i = 0; i < prices.length; i++) {
+        sum += (prices[i] || 0);
+        if (i >= period) sum -= (prices[i - period] || 0);
+        if (i >= period - 1) sma[i] = sum / period;
+    }
+    return sma;
+}
+
+// EMA: 指數平滑平均線 (遞迴權重法)
+function calcEMA(prices, period) {
+    let ema = new Array(prices.length).fill(null);
+    let alpha = 2 / (period + 1); // 平滑係數
+    let prev = null;
+    for (let i = 0; i < prices.length; i++) {
+        if (prices[i] !== null && !isNaN(prices[i])) {
+            if (prev === null) { prev = prices[i]; ema[i] = prev; } 
+            else { prev = alpha * prices[i] + (1 - alpha) * prev; ema[i] = prev; }
+        }
+    }
+    return ema;
+}
+
+// WMA: 加權移動平均線 (線性遞增權重法)
+function calcWMA(prices, period) {
+    let wma = new Array(prices.length).fill(null);
+    let weightSum = (period * (period + 1)) / 2; // 分母：1+2+...+n
+    for (let i = period - 1; i < prices.length; i++) {
+        let sum = 0; let valid = true;
+        for (let j = 0; j < period; j++) {
+            let p = prices[i - period + 1 + j];
+            if (p === null || isNaN(p)) { valid = false; break; }
+            sum += p * (j + 1); // 越近期的價格乘上越大權重
+        }
+        if (valid) wma[i] = sum / weightSum;
+    }
+    return wma;
+}
+
+//核心回測引擎：判斷買賣點並計算損益
+function runBacktest(startIdx, endIdx, s, l, initCap, commRate) {
+    let cash = initCap;
+    let shares = 0;
+    let firstBuyTotalCost = 0; // 記錄包含手續費的進場成本
+    let hasPosition = false;
+    let tradeCount = 0;
+    let winCount = 0;
+    let lossCount = 0;
+    let totalProfit = 0;
+    let totalLoss = 0;
+    let maxValue = initCap; // 淨值最高點 (MDD用)
+    let maxDD = 0;          // 最大回撤
+    
+    let tradeLog = [];
+    let equityCurve = [];
+    const maS = allMA[s];
+    const maL = allMA[l];
+
+    for (let i = startIdx; i <= endIdx; i++) {
+        const price = fullPrices[i];
+        if (isNaN(price)) { 
+            equityCurve.push(equityCurve.length > 0 ? equityCurve[equityCurve.length-1] : cash); 
+            continue; 
+        }
+
+        // 計算當前總淨值與更新最大回撤 (MDD)
+        let currentValue = cash + (shares * price);
+        if (currentValue > maxValue) maxValue = currentValue;
+        let dd = (maxValue - currentValue) / maxValue * 100;
+        if (dd > maxDD) maxDD = dd;
+
+        // 交易訊號判斷：黃金交叉/死亡交叉
+        if (i > 0 && maS[i] && maL[i] && maS[i-1] && maL[i-1]) {
+            // 買入訊號：短天數穿過長天數
+            if (maS[i-1] < maL[i-1] && maS[i] >= maL[i] && !hasPosition) {
+                const buyPriceWithFee = price * (1 + commRate); // 包含買入手續費
+                shares = Math.floor(cash / buyPriceWithFee);
+                if (shares > 0) {
+                    firstBuyTotalCost = shares * buyPriceWithFee;
+                    cash -= firstBuyTotalCost;
+                    hasPosition = true;
+                    tradeCount++;
+                    tradeLog.push({ date: fullDates[i], action: 'BUY', price: price, shares: shares, profit: '-' });
+                }
+            } 
+            // 賣出訊號：長天數穿過短天數
+            else if (maS[i-1] > maL[i-1] && maS[i] <= maL[i] && hasPosition) {
+                const sellProceedsAfterFee = (shares * price) * (1 - commRate); // 扣除賣出手續費後的淨回收現金
+                let pnl = sellProceedsAfterFee - firstBuyTotalCost; // 本次買賣循環結算的淨賺賠
+                
+                if (pnl > 0) { winCount++; totalProfit += pnl; } 
+                else if (pnl < 0) { lossCount++; totalLoss += Math.abs(pnl); }
+                
+                cash += sellProceedsAfterFee;
+                tradeLog.push({ date: fullDates[i], action: 'SELL', price: price, shares: shares, profit: pnl.toFixed(2) });
+                shares = 0; hasPosition = false; tradeCount++;
+            }
+        }
+        equityCurve.push(cash + (shares * price));
+    }
+
+    // 期末清倉：如果回測結束還持倉，強制平倉結算
+    if (hasPosition) {
+        const lastPrice = fullPrices[endIdx];
+        const sellProceedsAfterFee = (shares * lastPrice) * (1 - commRate);
+        let pnl = sellProceedsAfterFee - firstBuyTotalCost;
+        if (pnl > 0) { winCount++; totalProfit += pnl; } 
+        else if (pnl < 0) { lossCount++; totalLoss += Math.abs(pnl); }
+        cash += sellProceedsAfterFee;
+        tradeCount++;
+        tradeLog.push({ date: fullDates[endIdx], action: 'CLEAR', price: lastPrice, shares: shares, profit: pnl.toFixed(2) });
+    }
+
+    return { s, l, finalValue: cash, tradeCount, winCount, lossCount, totalProfit, totalLoss, maxDD, roi: (cash - initCap) / initCap * 100, trades: tradeLog, equity: equityCurve };
+}
+
+// --- 暴力破解搜尋主邏輯 ---
+document.getElementById('runBtn').addEventListener('click', function() {
+    document.getElementById('loader').classList.remove('d-none');
+    
+    // 從 UI 面板抓取參數
+    const stockName = document.getElementById('stockSelect').value;
+    const maType = document.getElementById('maType').value;
+    const maxP = parseInt(document.getElementById('maxP').value);
+    const startD = new Date(document.getElementById('startDate').value);
+    const endD = new Date(document.getElementById('endDate').value);
+    const currentInitialCapital = parseFloat(document.getElementById('initCapitalInput').value);
+    const currentCommRate = parseFloat(document.getElementById('commRateInput').value);
+
+    // 啟動計算任務 (使用 setTimeout 防止瀏覽器畫面凍結)
+    setTimeout(() => {
+        fullPrices = rawCSVData.map(r => r[stockName]);
+        
+        // 1. 預先計算所有均線數值矩陣 (優化運算速度)
+        allMA = {};
+        for (let p = 1; p <= maxP; p++) {
+            if (maType === "SMA") allMA[p] = calcSMA(fullPrices, p);
+            else if (maType === "EMA") allMA[p] = calcEMA(fullPrices, p);
+            else allMA[p] = calcWMA(fullPrices, p);
+        }
+
+        // 2. 轉換日期篩選為索引位置
+        let startIdx = -1, endIdx = -1;
+        for (let i = 0; i < fullDates.length; i++) {
+            let d = new Date(fullDates[i]);
+            if (startIdx === -1 && d >= startD) startIdx = i;
+            if (d <= endD) endIdx = i;
+        }
+
+        // 3. 雙層迴圈暴力破解所有參數組合
+        let results = [];
+        let zData = Array.from({ length: maxP }, () => Array(maxP).fill(null));
+
+        for (let s = 1; s <= maxP; s++) {
+            for (let l = 1; l <= maxP; l++) {
+                const res = runBacktest(startIdx, endIdx, s, l, currentInitialCapital, currentCommRate);
+                results.push(res);
+                zData[l - 1][s - 1] = res.roi; // 用於熱力圖 Z 軸
+            }
+        }
+
+        // 4. 排序與輸出 (比照 C++ 邏輯：資產 -> 間距 -> 參數天數)
+        results.sort((a, b) => {
+            if (Math.abs(a.finalValue - b.finalValue) > 1e-11) return b.finalValue - a.finalValue;
+            let distA = Math.abs(a.s - a.l); let distB = Math.abs(b.s - b.l);
+            if (distA !== distB) return distB - distA;
+            return b.s - a.s;
+        });
+
+        // 5. 繪製視覺化圖表與表格
+        drawHeatmap(zData, maxP);
+        drawSurface3D(zData, maxP);
+        renderRanking(results.slice(0, 20), startIdx, endIdx);
+        updateDisplay(results[0], startIdx, endIdx);
+        document.getElementById('loader').classList.add('d-none');
+    }, 100);
+});
+
+// --- 繪圖與 UI 呈現函式 ---
+
+// 繪製 2D 報酬分佈熱力圖( XY軸為短長期，Z軸為總報酬率(ROI%) )
+function drawHeatmap(zData, maxP) {
+    const values = Array.from({ length: maxP }, (_, i) => i + 1);
+    Plotly.newPlot('heatmapChart', [{
+        z: zData, x: values, y: values, type: 'heatmap', colorscale: 'Portland',
+        colorbar: { title: 'ROI %' },
+        hovertemplate: 'S: %{x}<br>L: %{y}<br>ROI: %{z:.2f}%<extra></extra>'
+    }], { title: '2D 熱力圖', xaxis: {title: '短期均線 (X)'}, yaxis: {title: '長期均線 (Y)'} });
+}
+
+// 繪製 3D 立體表面圖( XY軸為短長期，Z軸為總報酬率(ROI%) )
+function drawSurface3D(zData, maxP) {
+    const values = Array.from({ length: maxP }, (_, i) => i + 1);
+    Plotly.newPlot('surfaceChart3D', [{
+        z: zData, x: values, y: values, type: 'surface', colorscale: 'Portland',
+        contours: { z: { show: true, usecolormap: true, project: { z: true } } },
+        colorbar: { title: 'ROI %', x: 1.1 }
+    }], {
+        title: '3D 立體圖',
+        scene: { xaxis: {title: 'S'}, yaxis: {title: 'L'}, zaxis: {title: 'ROI %'} },
+        margin: { l: 0, r: 0, b: 0, t: 50 }
+    });
+}
+
+// 渲染 Top 20 排行榜表格
+function renderRanking(data, sIdx, eIdx) {
+    const tbody = document.querySelector('#rankingTable tbody');
+    tbody.innerHTML = data.map((r, i) => {
+        let winRate = r.tradeCount > 0 ? ((r.winCount / (r.winCount + r.lossCount)) * 100).toFixed(1) : 0;
+        return `
+        <tr class="clickable-row ${i===0?'active-row':''}" onclick="selectRank(this, ${JSON.stringify(r).replace(/"/g, '&quot;')}, ${sIdx}, ${eIdx})">
+            <td>${i+1}</td><td>${r.s} / ${r.l}</td><td>$${r.finalValue.toFixed(2)}</td>
+            <td class="${r.roi >= 0 ? 'text-success' : 'text-danger'}">${r.roi.toFixed(2)}%</td>
+            <td>${r.tradeCount}</td><td class="text-success">$${r.totalProfit.toFixed(1)}</td>
+            <td class="text-danger">$${r.totalLoss.toFixed(1)}</td><td>${winRate}%</td>
+        </tr>`}).join('');
+}
+
+// 選中特定排名列時更新主圖與交易明細
+function selectRank(row, data, sIdx, eIdx) {
+    document.querySelectorAll('.clickable-row').forEach(r => r.classList.remove('active-row'));
+    row.classList.add('active-row');
+    updateDisplay(data, sIdx, eIdx);
+}
+
+// 更新主圖表：繪製 K 線走勢、均線、買賣點、淨值曲線
+function updateDisplay(data, sIdx, eIdx) {
+    const dates = fullDates.slice(sIdx, eIdx + 1);
+    const prices = fullPrices.slice(sIdx, eIdx + 1);
+    const subMaS = allMA[data.s].slice(sIdx, eIdx + 1);
+    const subMaL = allMA[data.l].slice(sIdx, eIdx + 1);
+    const buySignals = data.trades.filter(t => t.action === 'BUY');
+    const sellSignals = data.trades.filter(t => t.action === 'SELL' || t.action === 'CLEAR');
+    
+    const traces = [
+        { x: dates, y: prices, name: '價格', line: {color: '#ccc', width: 1}, yaxis: 'y1' },
+        { x: dates, y: subMaS, name: 'Short MA', line: {color: '#f54290'}, yaxis: 'y1' },
+        { x: dates, y: subMaL, name: 'Long MA', line: {color: '#f5cb42'}, yaxis: 'y1' },
+        { x: buySignals.map(t=>t.date), y: buySignals.map(t=>t.price), mode: 'markers', name: '買入', marker: {symbol:'triangle-up', size:12, color:'#28a745'}, yaxis:'y1' },
+        { x: sellSignals.map(t=>t.date), y: sellSignals.map(t=>t.price), mode: 'markers', name: '賣出', marker: {symbol:'triangle-down', size:12, color:'#dc3545'}, yaxis:'y1' },
+        { x: dates, y: data.equity, name: '淨值走勢', fill: 'tozeroy', line: {color: '#4caf50'}, yaxis: 'y2' }
+    ];
+
+    Plotly.newPlot('mainChart', traces, {
+        title: `回測細節：短期 ${data.s} / 長期 ${data.l}`,
+        yaxis: { domain: [0.35, 1], title: '價格' },
+        yaxis2: { domain: [0, 0.25], title: '帳戶資產', side: 'right' },
+        hovermode: 'x unified', margin: { t: 50, b: 30 }
+    });
+
+    // 更新底部統計狀態欄
+    document.getElementById('summaryStats').textContent = `總獲利: $${data.totalProfit.toFixed(1)} | 總虧損: $${data.totalLoss.toFixed(1)} | 最終: $${data.finalValue.toFixed(2)}`;
+    
+    // 更新交易明細表內容
+    const tbody = document.querySelector('#tradeTable tbody');
+    tbody.innerHTML = data.trades.map((t, i) => {
+        let actionLabel = t.action === 'BUY' ? '買入' : (t.action === 'CLEAR' ? '期末清倉' : '賣出');
+        return `<tr style="color: ${t.action === 'BUY' ? '#28a745' : '#dc3545'}"><td>${i+1}</td><td>${t.date}</td><td>${actionLabel}</td><td>$${t.price.toFixed(2)}</td><td>${t.shares}</td><td>${t.profit >= 0 ? '+' + t.profit : t.profit}</td></tr>`;
+    }).reverse().join(''); // 最新的交易排在最上方
+}
+</script>
+</body>
+</html>
