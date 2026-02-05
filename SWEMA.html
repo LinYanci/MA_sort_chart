@@ -1,0 +1,606 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+    <meta charset="utf-8" />
+    <title>SMA/EMA/WMA 暴力破解最佳化系統 - 排序修正版</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.0.0/dist/css/bootstrap.min.css" rel="stylesheet">
+    <script src="https://cdn.plot.ly/plotly-2.27.0.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/PapaParse/5.3.0/papaparse.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+    <style>
+        body { background: #f4f7f9; }
+        .sidebar { background: #fff; padding: 20px; min-height: 100vh; border-right: 1px solid #ddd; position: sticky; top: 0; }
+        .config-section { background: #f8f9fa; padding: 15px; border-radius: 8px; margin-bottom: 15px; border: 1px solid #eee; }
+        #mainChart, #heatmapChart, #surfaceChart3D { background: white; border-radius: 8px; box-shadow: 0 2px 10px rgba(0,0,0,0.1); margin-bottom: 20px; }
+        #mainChart { height: 500px; }
+        #heatmapChart { height: 500px; }
+        #surfaceChart3D { height: 600px; }
+        .table-container { border: 1px solid #ddd; border-radius: 8px; background: #fff; overflow-y: auto; }
+        .trade-log-height { max-height: 350px; }
+        .ranking-height { max-height: 400px; }
+        .clickable-row { cursor: pointer; transition: background 0.2s; }
+        .clickable-row:hover { background: #f1f3f5 !important; }
+        .active-row { background: #cfe2ff !important; font-weight: bold; }
+        .sticky-header thead { position: sticky; top: 0; background: #212529; color: white; z-index: 10; }
+    </style>
+</head>
+<body>
+<div class="container-fluid">
+    <div class="row">
+        <nav class="col-md-3 sidebar">
+            <h4 class="mb-4 text-primary">策略最佳化引擎</h4>
+            
+            <div class="config-section">
+                <label class="form-label fw-bold">1. 數據上傳</label>
+                <input type="file" id="csvFile" accept=".csv" class="form-control mb-2" />
+                <select id="stockSelect" class="form-select" disabled></select>
+            </div>
+
+            <div class="config-section">
+                <label class="form-label fw-bold">2. 策略設定</label>
+                <small>均線類型</small>
+                <select id="maType" class="form-select mb-2">
+                    <option value="SMA">SMA (簡單移動平均)</option>
+                    <option value="EMA">EMA (指數移動平均)</option>
+                    <option value="WMA">WMA (加權移動平均)</option>
+                </select>
+                <small>搜尋範圍 (天數 1-N)</small>
+                <input type="number" id="maxP" class="form-control" value="100">
+            </div>
+
+            <div class="config-section">
+                <label class="form-label fw-bold">3. 帳戶與規費</label>
+                <div class="mb-2">
+                    <small>初始資金 (USD)</small>
+                    <input type="number" id="initCapitalInput" class="form-control" value="10000">
+                </div>
+                <div>
+                    <small>手續費率 (例如 0.0008)</small>
+                    <input type="number" id="commRateInput" class="form-control" value="0.0008" step="0.0001">
+                </div>
+            </div>
+
+            <div class="config-section">
+                <label class="form-label fw-bold">4. 日期篩選</label>
+                <div class="mb-2"><small>開始</small><input type="date" id="startDate" class="form-control"></div>
+                <div class="mb-2"><small>結束</small><input type="date" id="endDate" class="form-control"></div>
+                <button id="runBtn" class="btn btn-primary w-100 fw-bold shadow-sm mt-2" disabled>開始暴力破解搜尋</button>
+            </div>
+
+            <div class="config-section border border-warning" style="border-width: 2px !important; background: #fffcf5;">
+                <label class="form-label fw-bold text-dark">5. 跨年度鎖定追蹤</label>
+                <div id="lockStatusDisplay" class="badge bg-secondary w-100 p-2 mb-2">未鎖定參數</div>
+                
+                <div class="input-group input-group-sm mb-2">
+                    <span class="input-group-text bg-dark text-white">S</span>
+                    <input type="number" id="manualS" class="form-control" placeholder="短期">
+                    <span class="input-group-text bg-dark text-white">L</span>
+                    <input type="number" id="manualL" class="form-control" placeholder="長期">
+                    <button id="manualApplyBtn" class="btn btn-dark">查看</button>
+                </div>
+                <small class="text-muted d-block mb-2">*點擊查看後按 F12 可看詳細驗算</small>
+
+                <div class="d-flex gap-2 mb-2">
+                    <input type="number" id="quickYearInput" class="form-control" value="2014">
+                    <button id="setYearBtn" class="btn btn-outline-secondary btn-sm">設定日期</button>
+                </div>
+                <button id="runLocateBtn" class="btn btn-warning w-100 fw-bold shadow-sm">分析此年並定位排名</button>
+            </div>
+
+            <div id="loader" class="text-center mt-3 d-none">
+                <div class="spinner-border spinner-border-sm text-primary" role="status"></div>
+                <span class="ms-2 small">深度運算排名中...</span>
+            </div>
+        </nav>
+
+        <main class="col-md-9 p-4">
+            <h5 class="text-warning border-bottom pb-2">跨年度驗證紀錄 (鎖定組合：<span id="lockedParamText">-/-</span>)</h5>
+            <div class="table-container mb-4 shadow-sm" style="max-height: 200px; border: 2px solid #ffc107;">
+                <table class="table table-sm table-dark mb-0" id="performanceLogTable">
+                    <thead>
+                        <tr>
+                            <th>年度</th><th>參數</th><th>當年度排名</th><th>ROI %</th><th>最終資產</th><th>交易次數</th><th>勝率</th>
+                        </tr>
+                    </thead>
+                    <tbody></tbody>
+                </table>
+            </div>
+
+            <div id="mainChart"></div>
+
+            <div class="row">
+                <div class="col-xl-6">
+                    <h5 class="mb-2 text-primary border-bottom pb-2">2D 獲利熱力圖</h5>
+                    <div id="heatmapChart"></div>
+                </div>
+                <div class="col-xl-6">
+                    <h5 class="mb-2 text-primary border-bottom pb-2">3D 獲利地形圖</h5>
+                    <div id="surfaceChart3D"></div>
+                </div>
+            </div>
+            
+            <div class="d-flex justify-content-between align-items-center mb-2">
+                <h5 class="mb-0">當前組合交易明細</h5>
+                <div id="summaryStats" class="badge bg-dark p-2" style="font-size: 0.9rem;">等待計算</div>
+            </div>
+
+            <div class="table-container trade-log-height mb-5 shadow-sm">
+                <table class="table table-sm mb-0 sticky-header" id="tradeTable">
+                    <thead>
+                        <tr><th>序號</th><th>日期</th><th>動作</th><th>價格</th><th>股數</th><th>損益 (USD)</th></tr>
+                    </thead>
+                    <tbody></tbody>
+                </table>
+            </div>
+
+            <div class="d-flex justify-content-between align-items-center mb-2">
+                <h5 class="mb-0 text-primary border-bottom pb-2">Top 20 最佳參數組合</h5>
+                <button id="exportExcelBtn" class="btn btn-success btn-sm" disabled>
+                    📊 匯出全部Excel
+                </button>
+            </div>
+            <div class="table-container ranking-height shadow-sm">
+                <table class="table table-hover table-sm mb-0 sticky-header" id="rankingTable">
+                    <thead class="table-primary text-dark">
+                        <tr>
+                            <th>排名</th><th>參數(S/L)</th><th>最終資產</th><th>總報酬</th>
+                            <th>交易次數</th><th>總獲利</th><th>總虧損</th><th>勝率</th>
+                        </tr>
+                    </thead>
+                    <tbody></tbody>
+                </table>
+            </div>
+        </main>
+    </div>
+</div>
+
+<script>
+let fullDates = [];
+let fullPrices = [];
+let rawCSVData = [];
+let headers = [];
+let allMA = {};
+let lockedS = null;
+let lockedL = null;
+let currentResults = [];
+
+function toDateKey(value) {
+    if (value === null || value === undefined) return '';
+    if (typeof value === 'string') {
+        const trimmed = value.trim();
+        const head = trimmed.slice(0, 10);
+        const mh = head.match(/^(\d{4})[\/-](\d{1,2})[\/-](\d{1,2})$/);
+        if (mh) {
+            const y = mh[1];
+            const mo = String(mh[2]).padStart(2, '0');
+            const d = String(mh[3]).padStart(2, '0');
+            return `${y}-${mo}-${d}`;
+        }
+        const m = trimmed.match(/^(\d{4})[\/-](\d{1,2})[\/-](\d{1,2})$/);
+        if (m) {
+            const y = m[1];
+            const mo = String(m[2]).padStart(2, '0');
+            const d = String(m[3]).padStart(2, '0');
+            return `${y}-${mo}-${d}`;
+        }
+    }
+    const d = new Date(value);
+    if (isNaN(d)) return '';
+    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+}
+
+document.getElementById('csvFile').addEventListener('change', function(e) {
+    Papa.parse(e.target.files[0], {
+        header: true, dynamicTyping: true, skipEmptyLines: true,
+        complete: function(results) {
+            rawCSVData = results.data;
+            headers = Object.keys(rawCSVData[0]);
+            fullDates = rawCSVData.map(r => r[headers[0]]);
+            const select = document.getElementById('stockSelect');
+            select.innerHTML = headers.slice(1).map(h => `<option value="${h}">${h}</option>`).join('');
+            select.disabled = false;
+            document.getElementById('runBtn').disabled = false;
+            document.getElementById('startDate').value = toDateKey(fullDates[0]);
+            document.getElementById('endDate').value = toDateKey(fullDates[fullDates.length-1]);
+        }
+    });
+});
+
+function calcSMA(prices, period) {
+    let sma = new Array(prices.length).fill(null);
+    let sum = 0;
+    for (let i = 0; i < prices.length; i++) {
+        sum += (prices[i] || 0);
+        if (i >= period) sum -= (prices[i - period] || 0);
+        if (i >= period - 1) sma[i] = sum / period;
+    }
+    return sma;
+}
+function calcEMA(prices, period) {
+    let ema = new Array(prices.length).fill(null);
+    let alpha = 2 / (period + 1);
+    let prev = null;
+    for (let i = 0; i < prices.length; i++) {
+        if (prices[i] !== null && !isNaN(prices[i])) {
+            if (prev === null) { prev = prices[i]; ema[i] = prev; } 
+            else { prev = alpha * prices[i] + (1 - alpha) * prev; ema[i] = prev; }
+        }
+    }
+    return ema;
+}
+function calcWMA(prices, period) {
+    let wma = new Array(prices.length).fill(null);
+    let weightSum = (period * (period + 1)) / 2;
+    for (let i = period - 1; i < prices.length; i++) {
+        let sum = 0; let valid = true;
+        for (let j = 0; j < period; j++) {
+            let p = prices[i - period + 1 + j];
+            if (p === null || isNaN(p)) { valid = false; break; }
+            sum += p * (j + 1);
+        }
+        if (valid) wma[i] = sum / weightSum;
+    }
+    return wma;
+}
+
+function runBacktest(startIdx, endIdx, s, l, initCap, commRate) {
+    if (s === l) {
+        return { s, l, finalValue: initCap, tradeCount: 0, winCount: 0, lossCount: 0,
+                 totalProfit: 0, totalLoss: 0, goldenCount: 0, deathCount: 0,
+                 roi: 0, trades: [], equity: new Array(endIdx - startIdx + 2).fill(initCap) };
+    }
+    
+    let cash = initCap, shares = 0, firstBuyTotalCost = 0, hasPosition = false;
+    let tradeCount = 0, winCount = 0, lossCount = 0;
+    let totalProfit = 0, totalLoss = 0, goldenCount = 0, deathCount = 0;
+    let tradeLog = [], equityCurve = [];
+    
+    const maS = allMA[s], maL = allMA[l];
+
+    for (let i = startIdx; i < endIdx; i++) {  
+        const price = fullPrices[i];
+        if (isNaN(price)) { 
+            equityCurve.push(equityCurve.length > 0 ? equityCurve[equityCurve.length-1] : cash); 
+            continue; 
+        }
+        if (i > startIdx && maS[i] !== null && maL[i] !== null && maS[i - 1] !== null && maL[i - 1] !== null) {
+            const prevS = maS[i - 1];
+            const prevL = maL[i - 1];
+            const currS = maS[i];
+            const currL = maL[i];
+
+            // ★★★ 黃金交叉：前一天 S <= L，當天 S > L ★★★
+            if (prevS <= prevL && currS > currL) {
+                if (!hasPosition) {
+                    const buyPriceWithFee = price * (1 + commRate);
+                    shares = Math.floor(cash / buyPriceWithFee);
+                    if (shares > 0) {
+                        goldenCount++;
+                        firstBuyTotalCost = shares * buyPriceWithFee;
+                        cash -= firstBuyTotalCost;
+                        hasPosition = true;
+                        tradeCount++;
+                        tradeLog.push({ date: fullDates[i], action: 'BUY', price, shares, profit: '-' });
+                    }
+                }
+            } 
+            // ★★★ 死亡交叉：前一天 S >= L，當天 S < L ★★★
+            else if (prevS >= prevL && currS < currL) {
+                if (hasPosition) {
+                    deathCount++;
+                    const sellProceedsAfterFee = (shares * price) * (1 - commRate);
+                    let pnl = sellProceedsAfterFee - firstBuyTotalCost;
+                    
+                    if (pnl > 0.0001) { winCount++; totalProfit += pnl; } 
+                    else if (pnl < -0.0001) { lossCount++; totalLoss += Math.abs(pnl); }
+                    
+                    cash += sellProceedsAfterFee;
+                    tradeLog.push({ date: fullDates[i], action: 'SELL', price, shares, profit: pnl.toFixed(2) });
+                    shares = 0;
+                    hasPosition = false;
+                    tradeCount++;
+                }
+            }
+        }
+        equityCurve.push(cash + (shares * price));
+    }
+    
+    if (hasPosition === true) { 
+        const lastPrice = fullPrices[endIdx];
+        const sellProceedsAfterFee = (shares * lastPrice) * (1 - commRate);
+        let pnl = sellProceedsAfterFee - firstBuyTotalCost;
+
+        if (pnl > 0.0001) winCount++;
+        else if (pnl < -0.0001) lossCount++;
+
+        cash += sellProceedsAfterFee;
+        tradeCount++;
+        
+        tradeLog.push({
+            date: fullDates[endIdx],
+            action: 'CLEAR',
+            price: lastPrice,
+            shares: shares,
+            profit: pnl.toFixed(2)
+        });
+
+        hasPosition = false;
+        shares = 0;
+    }
+    
+    equityCurve.push(cash);
+    
+    return { s, l, finalValue: cash, tradeCount, winCount, lossCount, 
+             totalProfit, totalLoss, goldenCount, deathCount, 
+             roi: ((cash - initCap) / initCap) * 100, trades: tradeLog, equity: equityCurve };
+}
+
+// ★★★ 正確排序：finalValue → 間距 → S → L ★★★
+function customSort(a, b) {
+    // 1. finalValue 大者優先
+    if (b.finalValue !== a.finalValue) {
+        return b.finalValue - a.finalValue;
+    }
+    // 2. 間距（|L-S|）大者優先
+    const gapA = Math.abs(a.l - a.s);
+    const gapB = Math.abs(b.l - b.s);
+    if (gapB !== gapA) {
+        return gapB - gapA;
+    }
+    // 3. S 小者優先
+    if (a.s !== b.s) {
+        return a.s - b.s;
+    }
+    // 4. L 大者優先
+    return b.l - a.l;
+}
+
+document.getElementById('runBtn').addEventListener('click', function() {
+    document.getElementById('loader').classList.remove('d-none');
+    const stockName = document.getElementById('stockSelect').value;
+    const maType = document.getElementById('maType').value;
+    const maxP = parseInt(document.getElementById('maxP').value);
+    const startKey = toDateKey(document.getElementById('startDate').value);
+    const endKey = toDateKey(document.getElementById('endDate').value);
+    const initCap = parseFloat(document.getElementById('initCapitalInput').value), commRate = parseFloat(document.getElementById('commRateInput').value);
+
+    setTimeout(() => {
+        fullPrices = rawCSVData.map(r => r[stockName]);
+        allMA = {};
+        for (let p = 1; p <= maxP; p++) {
+            if (maType === "SMA") allMA[p] = calcSMA(fullPrices, p);
+            else if (maType === "EMA") allMA[p] = calcEMA(fullPrices, p);
+            else allMA[p] = calcWMA(fullPrices, p);
+        }
+        let startIdx = -1, endIdx = -1;
+        for (let i = 0; i < fullDates.length; i++) {
+            const key = toDateKey(fullDates[i]);
+            if (startIdx === -1 && key >= startKey) startIdx = i;
+            if (key <= endKey) endIdx = i;
+        }
+        let results = [];
+        let zData = Array.from({ length: maxP }, () => Array(maxP).fill(null));
+        for (let s = 1; s <= maxP; s++) {
+            for (let l = 1; l <= maxP; l++) {
+                const res = runBacktest(startIdx, endIdx, s, l, initCap, commRate);
+                results.push(res);
+                zData[l - 1][s - 1] = res.roi;
+            }
+        }
+        
+        results.sort(customSort);
+        currentResults = results;
+        
+        drawHeatmap(zData, maxP); drawSurface3D(zData, maxP);
+        renderRanking(results.slice(0, 20), startIdx, endIdx);
+        updateDisplay(results[0], startIdx, endIdx);
+        document.getElementById('exportExcelBtn').disabled = false;
+        document.getElementById('loader').classList.add('d-none');
+    }, 100);
+});
+
+function drawHeatmap(zData, maxP) {
+    const vals = Array.from({ length: maxP }, (_, i) => i + 1);
+    Plotly.newPlot('heatmapChart', [{ z: zData, x: vals, y: vals, type: 'heatmap', colorscale: 'Portland', colorbar: { title: 'ROI %' } }], { title: '2D 獲利熱力圖' });
+}
+function drawSurface3D(zData, maxP) {
+    const vals = Array.from({ length: maxP }, (_, i) => i + 1);
+    Plotly.newPlot('surfaceChart3D', [{ z: zData, x: vals, y: vals, type: 'surface', colorscale: 'Portland' }], { title: '3D 獲利地形圖', margin: { l: 0, r: 0, b: 0, t: 50 } });
+}
+function renderRanking(data, sIdx, eIdx) {
+    const tbody = document.querySelector('#rankingTable tbody');
+    tbody.innerHTML = data.map((r, i) => {
+        let winRate = ((r.winCount / (r.winCount + r.lossCount || 1)) * 100).toFixed(1);
+        return `<tr class="clickable-row ${i===0?'active-row':''}" onclick="selectRank(this, ${JSON.stringify(r).replace(/"/g, '&quot;')}, ${sIdx}, ${eIdx})">
+            <td>${i+1}</td><td>${r.s} / ${r.l}</td><td>$${r.finalValue.toFixed(2)}</td><td>${r.roi.toFixed(2)}%</td><td>${r.tradeCount}</td><td>$${r.totalProfit.toFixed(1)}</td><td>$${r.totalLoss.toFixed(1)}</td><td>${winRate}%</td></tr>`}).join('');
+}
+function selectRank(row, data, sIdx, eIdx) {
+    document.querySelectorAll('.clickable-row').forEach(r => r.classList.remove('active-row'));
+    if (row) row.classList.add('active-row');
+    lockedS = data.s; lockedL = data.l;
+    document.getElementById('lockStatusDisplay').innerText = `已鎖定：S(${lockedS}) / L(${lockedL})`;
+    document.getElementById('lockStatusDisplay').classList.replace('bg-secondary', 'bg-danger');
+    document.getElementById('lockedParamText').innerText = `${lockedS} / ${lockedL}`;
+    updateDisplay(data, sIdx, eIdx);
+}
+function updateDisplay(data, sIdx, eIdx) {
+    const dates = fullDates.slice(sIdx, eIdx + 1), prices = fullPrices.slice(sIdx, eIdx + 1);
+    const buy = data.trades.filter(t => t.action === 'BUY'), sell = data.trades.filter(t => t.action !== 'BUY');
+    
+    let traces;
+    if (data.s === data.l) {
+        traces = [
+            { x: dates, y: prices, name: '價格', line: {color: '#888', width: 2}, yaxis: 'y1' },
+            { x: dates, y: allMA[data.s].slice(sIdx, eIdx + 1), name: `MA(${data.s})`, line: {color: '#ff9800', width: 2, dash: 'dot'}, yaxis: 'y1' },
+            { x: dates, y: data.equity, name: '資產 (無交易)', fill: 'tozeroy', line: {color: '#9e9e9e'}, yaxis: 'y2' }
+        ];
+    } else {
+        traces = [
+            { x: dates, y: prices, name: '價格', line: {color: '#ccc', width: 1}, yaxis: 'y1' },
+            { x: dates, y: allMA[data.s].slice(sIdx, eIdx + 1), name: `S(${data.s})`, line: {color: '#f54290'}, yaxis: 'y1' },
+            { x: dates, y: allMA[data.l].slice(sIdx, eIdx + 1), name: `L(${data.l})`, line: {color: '#f5cb42'}, yaxis: 'y1' },
+            { x: buy.map(t=>t.date), y: buy.map(t=>t.price), mode: 'markers', name: '買', marker: {symbol:'triangle-up', size:12, color:'#28a745'} },
+            { x: sell.map(t=>t.date), y: sell.map(t=>t.price), mode: 'markers', name: '賣', marker: {symbol:'triangle-down', size:12, color:'#dc3545'} },
+            { x: dates, y: data.equity, name: '資產', fill: 'tozeroy', line: {color: '#4caf50'}, yaxis: 'y2' }
+        ];
+    }
+    
+    const titleSuffix = data.s === data.l ? ' (無交易模式)' : '';
+    Plotly.newPlot('mainChart', traces, { 
+        title: `分析中：S(${data.s}) / L(${data.l})${titleSuffix}`, 
+        yaxis: { domain: [0.35, 1] }, 
+        yaxis2: { domain: [0, 0.25], side: 'right' }, 
+        hovermode: 'x unified' 
+    });
+    
+    document.getElementById('summaryStats').innerHTML = `資產: $${data.finalValue.toFixed(2)} | 獲利: $${data.totalProfit.toFixed(1)} | 交叉: ${data.goldenCount}/${data.deathCount}`;
+    
+    if (data.trades.length === 0) {
+        document.querySelector('#tradeTable tbody').innerHTML = '<tr><td colspan="6" class="text-center text-muted">無交易記錄（S 與 L 參數相同）</td></tr>';
+    } else {
+        document.querySelector('#tradeTable tbody').innerHTML = data.trades.map((t, i) => `<tr><td>${i+1}</td><td>${t.date}</td><td>${t.action}</td><td>$${t.price.toFixed(2)}</td><td>${t.shares}</td><td>${t.profit}</td></tr>`).reverse().join('');
+    }
+}
+
+document.getElementById('setYearBtn').addEventListener('click', () => {
+    const y = document.getElementById('quickYearInput').value;
+    document.getElementById('startDate').value = `${y}-01-01`;
+    document.getElementById('endDate').value = `${y}-12-31`;
+});
+
+document.getElementById('exportExcelBtn').addEventListener('click', function() {
+    if (currentResults.length === 0) { alert('沒有可匯出的數據！'); return; }
+    const excelData = currentResults.map((r, i) => ({
+        '排名': i + 1, '短期參數(S)': r.s, '長期參數(L)': r.l, '參數組合': `${r.s}/${r.l}`,
+        '最終資產(USD)': r.finalValue.toFixed(2), '總報酬率(%)': r.roi.toFixed(2),
+        '交易次數': r.tradeCount, '獲利交易': r.winCount, '虧損交易': r.lossCount,
+        '總獲利(USD)': r.totalProfit.toFixed(2), '總虧損(USD)': r.totalLoss.toFixed(2),
+        '勝率(%)': ((r.winCount / (r.winCount + r.lossCount || 1)) * 100).toFixed(1),
+        '黃金交叉次數': r.goldenCount, '死亡交叉次數': r.deathCount
+    }));
+    const wb = XLSX.utils.book_new();
+    const ws = XLSX.utils.json_to_sheet(excelData);
+    ws['!cols'] = [{wch:8},{wch:10},{wch:10},{wch:12},{wch:15},{wch:12},{wch:10},{wch:10},{wch:10},{wch:15},{wch:15},{wch:10},{wch:12},{wch:12}];
+    XLSX.utils.book_append_sheet(wb, ws, "參數排名");
+    const stockName = document.getElementById('stockSelect').value || 'Stock';
+    const maType = document.getElementById('maType').value;
+    const startDate = document.getElementById('startDate').value;
+    const endDate = document.getElementById('endDate').value;
+    const fileName = `${stockName}_${maType}_排名_${startDate}_to_${endDate}.xlsx`;
+    XLSX.writeFile(wb, fileName);
+    alert(`Excel檔案已匯出：${fileName}`);
+});
+
+document.getElementById('runLocateBtn').addEventListener('click', function() {
+    if (lockedS === null) { alert("請先選取一組參數進行鎖定！"); return; }
+    document.getElementById('loader').classList.remove('d-none');
+    const maxP = parseInt(document.getElementById('maxP').value);
+    const startKey = toDateKey(document.getElementById('startDate').value);
+    const endKey = toDateKey(document.getElementById('endDate').value);
+    const initCap = parseFloat(document.getElementById('initCapitalInput').value), commRate = parseFloat(document.getElementById('commRateInput').value);
+
+    setTimeout(() => {
+        let startIdx = -1, endIdx = -1;
+        for (let i = 0; i < fullDates.length; i++) {
+            const key = toDateKey(fullDates[i]);
+            if (startIdx === -1 && key >= startKey) startIdx = i;
+            if (key <= endKey) endIdx = i;
+        }
+        let allResults = [];
+        for (let s = 1; s <= maxP; s++) {
+            for (let l = 1; l <= maxP; l++) {
+                allResults.push(runBacktest(startIdx, endIdx, s, l, initCap, commRate));
+            }
+        }
+        allResults.sort(customSort);
+        const rankIdx = allResults.findIndex(r => r.s === lockedS && r.l === lockedL);
+        const myRes = allResults[rankIdx];
+        if (!myRes) {
+            alert(`在新的範圍內找不到參數組合 ${lockedS}/${lockedL}`);
+            document.getElementById('loader').classList.add('d-none');
+            return;
+        }
+        updateDisplay(myRes, startIdx, endIdx);
+        const year = document.getElementById('startDate').value.split('-')[0];
+        const winRate = ((myRes.winCount / (myRes.winCount + myRes.lossCount || 1)) * 100).toFixed(1);
+        const newRow = `<tr><td>${year}</td><td><b>${lockedS}/${lockedL}</b></td><td><span class="badge ${rankIdx < 50 ? 'bg-success' : 'bg-danger'}">第 ${rankIdx + 1} 名</span></td><td>${myRes.roi.toFixed(2)}%</td><td>$${myRes.finalValue.toFixed(2)}</td><td>${myRes.tradeCount}</td><td>${winRate}%</td></tr>`;
+        document.querySelector('#performanceLogTable tbody').insertAdjacentHTML('afterbegin', newRow);
+        document.getElementById('loader').classList.add('d-none');
+    }, 100);
+});
+
+document.getElementById('manualApplyBtn').addEventListener('click', function() {
+    const s = parseInt(document.getElementById('manualS').value);
+    const l = parseInt(document.getElementById('manualL').value);
+    if (isNaN(s) || isNaN(l)) { alert("請輸入有效的數值！"); return; }
+    if (Object.keys(allMA).length === 0) { alert("請先點擊「開始暴力破解搜尋」以預算數據！"); return; }
+    if (!allMA[s] || !allMA[l]) { alert("該參數尚未計算，請擴大搜尋範圍或重新運算！"); return; }
+    const startKey = toDateKey(document.getElementById('startDate').value);
+    const endKey = toDateKey(document.getElementById('endDate').value);
+    const initCap = parseFloat(document.getElementById('initCapitalInput').value), commRate = parseFloat(document.getElementById('commRateInput').value);
+    let startIdx = -1, endIdx = -1;
+    for (let i = 0; i < fullDates.length; i++) {
+        const key = toDateKey(fullDates[i]);
+        if (startIdx === -1 && key >= startKey) startIdx = i;
+        if (key <= endKey) endIdx = i;
+    }
+    const res = runBacktest(startIdx, endIdx, s, l, initCap, commRate);
+    selectRank(null, res, startIdx, endIdx);
+    console.clear();
+    console.log(`%c🕵️ 自動觸發偵錯：[S=${s} / L=${l}]`, "color: cyan; font-weight: bold; font-size: 14px;");
+    debugStrategyDetail_V2(s, l);
+});
+
+function debugStrategyDetail_V2(s, l) {
+    if (!fullPrices || fullPrices.length === 0) { console.error("無數據"); return; }
+    if (s === l) {
+        console.log(`%c⚠️ S=L (${s})，無交易`, "color: orange; font-weight: bold; font-size: 14px;");
+        return;
+    }
+    const initCap = parseFloat(document.getElementById('initCapitalInput').value) || 10000;
+    const commRate = parseFloat(document.getElementById('commRateInput').value) || 0.0008;
+    const startKey = toDateKey(document.getElementById('startDate').value);
+    const endKey = toDateKey(document.getElementById('endDate').value);
+    let startIdx = -1, endIdx = -1;
+    for (let i = 0; i < fullDates.length; i++) {
+        const key = toDateKey(fullDates[i]);
+        if (startIdx === -1 && key >= startKey) startIdx = i;
+        if (key <= endKey) endIdx = i;
+    }
+    const maS = allMA[s], maL = allMA[l];
+    let cash = initCap, shares = 0, hasPosition = false, firstBuyCost = 0;
+    console.log(`日期\t\t價格\tS(${s})\tL(${l})\t動作\t股數\t損益`);
+    for (let i = startIdx; i < endIdx; i++) {
+        if (i <= 0) continue;
+        const price = fullPrices[i];
+        if (!price) continue;
+        const prevS = maS[i-1], currS = maS[i], prevL = maL[i-1], currL = maL[i];
+        if (currS === null || currL === null || prevS === null || prevL === null) continue;
+        if (prevS < prevL && currS >= currL && !hasPosition) {
+            const buyPrice = price * (1 + commRate);
+            shares = Math.floor(cash / buyPrice);
+            if (shares > 0) {
+                const cost = shares * buyPrice;
+                cash -= cost; firstBuyCost = cost; hasPosition = true;
+                console.log(`%c${fullDates[i]}\t$${price.toFixed(2)}\t${currS.toFixed(2)}\t${currL.toFixed(2)}\t🟢買\t${shares}\t$${cash.toFixed(2)}`, "color: #4caf50");
+            }
+        } else if (prevS > prevL && currS <= currL && hasPosition) {
+            const sellPrice = price * (1 - commRate);
+            const revenue = shares * sellPrice;
+            const profit = revenue - firstBuyCost;
+            cash += revenue; shares = 0; hasPosition = false;
+            console.log(`%c${fullDates[i]}\t$${price.toFixed(2)}\t${currS.toFixed(2)}\t${currL.toFixed(2)}\t🔴賣\t---\t$${profit.toFixed(2)}`, profit > 0 ? "color: #f44336" : "color: red; font-weight: bold");
+        }
+    }
+    if (hasPosition) {
+        const lastPrice = fullPrices[endIdx];
+        const revenue = shares * lastPrice * (1 - commRate);
+        const profit = revenue - firstBuyCost;
+        cash += revenue;
+        console.log(`%c${fullDates[endIdx]}\t$${lastPrice.toFixed(2)}\t--\t--\t🔚清倉\t---\t$${profit.toFixed(2)}`, "color: orange");
+    }
+    console.log(`最終資產: $${cash.toFixed(2)}, 獲利: $${(cash - initCap).toFixed(2)}`);
+}
+</script>
+</body>
+</html>
